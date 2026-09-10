@@ -1,0 +1,9 @@
+Test data files in this directory are sourced from python-uefivars
+(https://github.com/awslabs/python-uefivars), MIT-licensed,
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+Files:
+  t01.json  - JSON varstore (v1 array form)
+  t02.aws   - Same variables as t02.json, AWS UEFI blob format (base64)
+  t02.edk2  - Same variables as t02.json, EDK2/OVMF flash format
+  t02.json  - JSON varstore (v2 object form)
