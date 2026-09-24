@@ -37,6 +37,9 @@ pub mod guid {
 
     /// EDK2 variable store GUID.
     pub const EDK2_VARSTORE: Uuid = uuid!("aaf32c78-947b-439a-a180-2e144ec37792");
+
+    /// `gEdkiiWorkingBlockSignatureGuid`: signature of the fault tolerant write working block.
+    pub const EDK2_FTW_WORKING_BLOCK: Uuid = uuid!("9e58292b-7c68-497d-a0ce-6500fd9f1b95");
 }
 
 /// A single UEFI variable.

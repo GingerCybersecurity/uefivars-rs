@@ -8,6 +8,13 @@
 //!    reserved, revision, blockmap.
 //! 3. **Variable store header** — varstore GUID, varstore size, status sentinel.
 //! 4. **Variable records** — each prefixed with `0x55aa`, 4-byte aligned.
+//! 5. **Fault tolerant write (FTW) area** — in the second half of the flash: an
+//!    event log block, the FTW working block (with its header), and the spare
+//!    area. Everything not written is `0xFF`, erased flash.
+//!
+//! The firmware treats bytes that are not `0xFF` as data, so free space left
+//! as `0x00` has to be reclaimed, and a missing FTW header rebuilt, before it
+//! can boot. Under SMM with a secure pflash that takes minutes.
 //!
 //! Authenticated variables carry a public-key digest in a synthetic `certdb`
 //! variable. The digest is round-tripped via `UefiVar::digest`.
@@ -25,6 +32,17 @@ const STATE_SETTLED: u8 = 0x3f;
 const VAR_START_MARKER: u16 = 0x55aa;
 
 const OVMF_BLOCK_SIZE: u64 = 0x1000;
+
+/// The value of erased flash, and so of every byte the store does not use.
+const ERASED: u8 = 0xff;
+
+/// The FTW working block: one block, ending where the second half of the flash begins.
+const FTW_WORKING_BLOCK_SIZE: u64 = OVMF_BLOCK_SIZE;
+/// `EFI_FAULT_TOLERANT_WORKING_BLOCK_HEADER`: signature, CRC, state, reserved, queue size.
+const FTW_HEADER_SIZE: u64 = 32;
+/// The state byte once the header is valid: `WorkingBlockValid` (bit 0) cleared, since flash
+/// bits can only be cleared, and `WorkingBlockInvalid` (bit 1) still set.
+const FTW_STATE_VALID: u8 = 0xfe;
 
 /// Default total flash size used by OVMF / AAVMF (528 KiB).
 pub const DEFAULT_LENGTH: u64 = 540_672;
@@ -282,8 +300,36 @@ pub fn serialize_with(store: &UefiVarStore, opts: &Edk2Options) -> Result<Vec<u8
             ),
         ));
     }
-    buf.resize(length as usize, 0);
+    buf.resize(length as usize, ERASED);
+    let working_block = (length / 2 - FTW_WORKING_BLOCK_SIZE) as usize;
+    buf[working_block..working_block + FTW_HEADER_SIZE as usize]
+        .copy_from_slice(&ftw_working_block_header());
     Ok(buf)
+}
+
+/// The header OVMF writes when it formats an empty FTW working block. The CRC covers the whole
+/// header with the CRC field and the state byte still erased; the valid state is set afterwards.
+fn ftw_working_block_header() -> [u8; FTW_HEADER_SIZE as usize] {
+    let mut header = [ERASED; FTW_HEADER_SIZE as usize];
+    header[..16].copy_from_slice(guid::EDK2_FTW_WORKING_BLOCK.to_bytes_le().as_ref());
+    let write_queue_size = FTW_WORKING_BLOCK_SIZE - FTW_HEADER_SIZE;
+    header[24..32].copy_from_slice(&write_queue_size.to_le_bytes());
+    let crc = crc32(&header);
+    header[16..20].copy_from_slice(&crc.to_le_bytes());
+    header[20] = FTW_STATE_VALID;
+    header
+}
+
+/// CRC-32 (IEEE 802.3), as EDK2's `CalculateCrc32` computes it.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+        }
+    }
+    !crc
 }
 
 fn write_var(buf: &mut Vec<u8>, var: &UefiVar) {
@@ -554,6 +600,33 @@ mod tests {
         let bytes = serialize(&store).unwrap();
         let reparsed = parse(&bytes).unwrap();
         assert_eq!(store, reparsed);
+    }
+
+    #[test]
+    fn free_space_is_erased_flash() {
+        let bytes = serialize(&parse(t02_edk2()).unwrap()).unwrap();
+        let working_block = (DEFAULT_LENGTH / 2 - FTW_WORKING_BLOCK_SIZE) as usize;
+        let header_end = working_block + FTW_HEADER_SIZE as usize;
+        // the last variable ends well before the event log that precedes the working block
+        assert!(bytes[working_block - 0x1000..working_block]
+            .iter()
+            .all(|&b| b == ERASED));
+        assert!(bytes[header_end..].iter().all(|&b| b == ERASED));
+    }
+
+    #[test]
+    fn ftw_header_matches_ovmf() {
+        // the working block header of Debian and Ubuntu's OVMF_VARS_4M.fd, at 0x41000
+        let expected =
+            hex::decode("2b29589e687c7d49a0ce6500fd9f1b952caf2c64feffffffe00f000000000000")
+                .unwrap();
+        let bytes = serialize(&UefiVarStore::new()).unwrap();
+        assert_eq!(&bytes[0x41000..0x41020], expected.as_slice());
+    }
+
+    #[test]
+    fn crc32_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
     }
 
     #[test]
