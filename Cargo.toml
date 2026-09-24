@@ -1,6 +1,6 @@
 [package]
 name = "uefivars"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Read, write, and manipulate UEFI variable stores in AWS, EDK2/OVMF, and JSON formats"
